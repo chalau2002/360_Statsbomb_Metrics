@@ -1,3 +1,9 @@
 pandas
+tqdm
 statsbombpy
 pyarrow
+matplotlib
+seaborn
+ipykernel
+mplsoccer
+ipywidgets
