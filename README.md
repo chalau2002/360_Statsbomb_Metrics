@@ -133,4 +133,7 @@ cd app
 streamlit run app.py
 ```
 
-A app fica disponível em **http://localhost:8501**
+## Acesso à Aplicação
+
+- Ambiente local: `http://localhost:8501`
+- Deploy em produção: https://360-statsbomb-metrics.streamlit.app/
