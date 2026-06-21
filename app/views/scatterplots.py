@@ -105,15 +105,14 @@ def show_scatterplots(player_df, rai, player_positions):
         ).reset_index()
 
         rai_player = rai_player.merge(
-            df[['player', 'team', 'position_group', 'minutes']],
+            df[['player', 'team', 'position_group', 'minutes', 'lbp_count']],
             on='player', how='inner'
         )
 
-        min_receptions = st.slider("Mínimo de Receções Realizadas", 1, int(rai_player['receptions'].max()), 10)
-
         df_matrix = rai_player[
             (rai_player['minutes'] >= min_min) &
-            (rai_player['receptions'] >= min_receptions) &
+            (rai_player['lbp_count'] >= min_lbp) &
+            (rai_player['receptions'] >= min_rai) &
             (rai_player['position_group'].isin(selected_pos))
         ].copy()
 
