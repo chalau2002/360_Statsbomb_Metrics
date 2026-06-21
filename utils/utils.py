@@ -1,7 +1,10 @@
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 from mplsoccer import Pitch
+from scipy.spatial import ConvexHull, Voronoi
+import matplotlib.path as mpath
 
 # Constants for defensive-line clustering and line breaking
 LINE_GAP_THRESHOLD = 4.5    # gap em X > 4.5m → nova linha defensiva
@@ -67,6 +70,43 @@ def add_pitch_legend(fig, ncol=5, fontsize=9, anchor=(0.5, 0.0)):
     )
 
 
+# Helpers para a legenda do RAI (receção)
+def reception_legend_handles():
+    import matplotlib.lines as mlines
+    import matplotlib.patches as mpatches
+    return [
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#15803d',
+                      markeredgecolor='white', markersize=9, label='Receiver'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#4ade80',
+                      markeredgecolor='white', markersize=7, label='Teammates'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#f87171',
+                      markeredgecolor='white', markersize=7, label='Defenders'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#fbbf24',
+                      markeredgecolor='black', markersize=8, label='Goalkeeper'),
+        mlines.Line2D([0], [0], marker='D', color='w', markerfacecolor='#ef4444',
+                      markeredgecolor='black', markersize=7, label='Nearest Defender'),
+        mpatches.Patch(facecolor='#22c55e', edgecolor='#15803d', alpha=0.30,
+                       linewidth=1.5, label='Voronoi inside Hull (Controlled Space)'),
+        mpatches.Patch(facecolor='#ef4444', edgecolor='#dc2626', alpha=0.15,
+                       linewidth=1.5, linestyle='--', label='Defensive Convex Hull'),
+        mlines.Line2D([0], [0], color='#b91c1c', linewidth=1.2, linestyle=':',
+                      label='Density / Proximity (3m)')
+    ]
+
+# Adicionar legenda do RAI na parte inferior central da figura.
+def add_reception_legend(fig, ncol=4, fontsize=9, anchor=(0.5, 0.0)):
+    fig.legend(
+        handles=reception_legend_handles(),
+        loc='lower center',
+        ncol=ncol,
+        fontsize=fontsize,
+        framealpha=0.0,
+        edgecolor='none',
+        bbox_to_anchor=anchor,
+    )
+
+
+
 # Title helper
 def pass_title(row, matches_df=None):
     player  = row.get('player', 'Unknown')
@@ -95,6 +135,15 @@ def pass_title(row, matches_df=None):
         f"  |  {dist:.1f}m  |  {outcome}"
         f"{match_str}"
     )
+
+# abreviar nome do jogador para "P. Último"
+def _get_short_name(name):
+    if name is None or (isinstance(name, float) and np.isnan(name)) or not isinstance(name, str) or name.strip() == '':
+        return None
+    parts = name.split()
+    if len(parts) > 1:
+        return f"{parts[0][0]}. {parts[-1]}"
+    return name
 
 
 # funçao para extrair coordenadas (x, y) de um array/lista
@@ -272,6 +321,16 @@ def plot_pass_on_pitch(ax, row, events_df, title=''):
     ax.scatter(px, py, s=130, color=COL_PASSER,
                zorder=7, marker='o', edgecolors='white', linewidth=1.5)
 
+    # Identificar passador no gráfico
+    passer_short = _get_short_name(row.get('player'))
+    if passer_short:
+        passer_y = py - 3.0 if py > 8 else py + 3.0
+        ax.text(px, passer_y, passer_short,
+                color='#166534', fontsize=6.0, ha='center', va='center',
+                fontweight='bold', zorder=9,
+                bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
+                          edgecolor=COL_PASSER, alpha=0.85, linewidth=0.7))
+
     # Direção do passe
     ax.annotate('', xy=(ex, ey), xytext=(px, py),
                  arrowprops=dict(arrowstyle='->', color=COL_PASS,
@@ -280,6 +339,16 @@ def plot_pass_on_pitch(ax, row, events_df, title=''):
 
     # Final do passe
     ax.scatter(ex, ey, s=80, color=COL_PASS, zorder=7, marker='x', linewidths=2)
+
+    # Identificar receptor no gráfico
+    receiver_short = _get_short_name(row.get('pass_recipient'))
+    if receiver_short:
+        receiver_y = ey + 3.0 if ey < 72 else ey - 3.0
+        ax.text(ex, receiver_y, receiver_short,
+                color='#0e7490', fontsize=6.0, ha='center', va='center',
+                fontweight='bold', zorder=9,
+                bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
+                          edgecolor=COL_PASS, alpha=0.85, linewidth=0.7))
 
     # Distância percorrida
     dist  = float(row.get('distance_advanced', ex - px))
@@ -291,3 +360,331 @@ def plot_pass_on_pitch(ax, row, events_df, title=''):
                       edgecolor='none', alpha=0.7))
 
     ax.set_title(title, fontsize=9.5, color='#1e293b', pad=7, fontweight='bold')
+
+
+# Helpers para RAI
+
+# função para verificar se o recetor está dentro do convex hull dos defesas
+def _is_inside_convex_hull(point, hull_points) -> bool:
+    
+    # Verificar se o número de defesas é suficiente para formar um hull
+    if len(hull_points) < 3:
+        return False
+    try:
+        hull_pts = np.asarray(hull_points)
+        hull = ConvexHull(hull_pts)
+        hull_path = mpath.Path(hull_pts[hull.vertices])
+        # verificar se o ponto está dentro ou na fronteira do hull
+        return bool(hull_path.contains_point(point) or hull_path.contains_point(point, radius=1e-5))
+    except Exception:
+        return False
+
+
+# função para calcular a área do convex hull defensivo
+def _get_convex_hull_area(points) -> float:
+    # Verificar se o número de pontos é suficiente para formar um hull
+    if len(points) < 3:
+        return 0.0
+    try:
+        hull = ConvexHull(points)
+        return float(hull.volume)
+    except Exception:
+        return 0.0
+
+
+# função para calcular a interseção de duas linhas/segmentos
+def _get_line_intersection(p1, p2, q1, q2):
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = q1
+    x4, y4 = q2
+    
+    denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1)
+    if abs(denom) < 1e-9:
+        return None
+        
+    ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom
+    ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom
+    
+    if 0.0 <= ua <= 1.0 and 0.0 <= ub <= 1.0:
+        x = x1 + ua * (x2 - x1)
+        y = y1 + ua * (y2 - y1)
+        return [x, y]
+    return None
+
+
+# função para calcular a área de interseção entre dois polígonos convexos
+def _intersect_convex_polygons(poly1, poly2) -> float:
+    p1 = np.asarray(poly1, dtype=float)
+    p2 = np.asarray(poly2, dtype=float)
+    path1 = mpath.Path(p1)
+    path2 = mpath.Path(p2)
+    
+    pts = []
+    # 1. Vértices de poly1 dentro de poly2
+    for pt in p1:
+        if path2.contains_point(pt) or path2.contains_point(pt, radius=1e-5):
+            pts.append(pt)
+    # 2. Vértices de poly2 dentro de poly1
+    for pt in p2:
+        if path1.contains_point(pt) or path1.contains_point(pt, radius=1e-5):
+            pts.append(pt)
+    # 3. Interseções entre as arestas
+    n1 = len(p1)
+    n2 = len(p2)
+    for i in range(n1):
+        edge1_p1 = p1[i]
+        edge1_p2 = p1[(i+1)%n1]
+        for j in range(n2):
+            edge2_p1 = p2[j]
+            edge2_p2 = p2[(j+1)%n2]
+            inter = _get_line_intersection(edge1_p1, edge1_p2, edge2_p1, edge2_p2)
+            if inter is not None:
+                pts.append(inter)
+                
+    if len(pts) < 3:
+        return 0.0
+    try:
+        pts = np.unique(np.array(pts).round(6), axis=0)
+        if len(pts) < 3:
+            return 0.0
+        hull = ConvexHull(pts)
+        return float(hull.volume)
+    except Exception:
+        return 0.0
+
+
+# função para obter os vértices da célula Voronoi de forma ordenada e limitada ao campo
+def _get_clipped_voronoi_vertices(all_points, target_point, pitch_length=120.0, pitch_width=80.0):
+    all_pts = np.asarray(all_points, dtype=float)
+    target = np.asarray(target_point, dtype=float)
+    if len(all_pts) <= 1:
+        return np.array([[0.0, 0.0], [pitch_length, 0.0], [pitch_length, pitch_width], [0.0, pitch_width]])
+        
+    reflected = []
+    for pt in all_pts:
+        x, y = pt[0], pt[1]
+        reflected.append([-x, y])
+        reflected.append([2 * pitch_length - x, y])
+        reflected.append([x, -y])
+        reflected.append([x, 2 * pitch_width - y])
+        reflected.append([-x, -y])
+        reflected.append([-x, 2 * pitch_width - y])
+        reflected.append([2 * pitch_length - x, -y])
+        reflected.append([2 * pitch_length - x, 2 * pitch_width - y])
+        
+    expanded = np.vstack([all_pts, reflected])
+    try:
+        vor = Voronoi(expanded)
+        dists_real = np.sum((all_pts - target) ** 2, axis=1)
+        target_idx = np.argmin(dists_real)
+        
+        region_idx = vor.point_region[target_idx]
+        vertices_idxs = vor.regions[region_idx]
+        if -1 in vertices_idxs or not vertices_idxs:
+            return np.array([])
+        vertices = vor.vertices[vertices_idxs]
+        
+        # Ordenar os vértices em sentido anti-horário
+        hull = ConvexHull(vertices)
+        return vertices[hull.vertices]
+    except Exception:
+        return np.array([])
+
+
+# função para calcular o Voronoi no bloco defensivo
+def _get_voronoi_area_in_hull(all_points, target_point, hull_points, pitch_length=120.0, pitch_width=80.0) -> float:
+    if len(hull_points) < 3:
+        return 0.0
+        
+    vor_vertices = _get_clipped_voronoi_vertices(all_points, target_point, pitch_length, pitch_width)
+    if len(vor_vertices) == 0:
+        return 0.0
+        
+    try:
+        hull_pts = np.asarray(hull_points)
+        hull = ConvexHull(hull_pts)
+        hull_vertices = hull_pts[hull.vertices]
+        return _intersect_convex_polygons(vor_vertices, hull_vertices)
+    except Exception:
+        return 0.0
+
+
+# função para calcular a área Voronoi
+def _get_clipped_voronoi_area(all_points, target_point, hull_points=None, pitch_length=120.0, pitch_width=80.0) -> float:
+    if hull_points is not None and len(hull_points) >= 3:
+        return _get_voronoi_area_in_hull(all_points, target_point, hull_points, pitch_length, pitch_width)
+        
+    # Fallback to standard Voronoi
+    all_pts = np.asarray(all_points, dtype=float)
+    target = np.asarray(target_point, dtype=float)
+    if len(all_pts) <= 1:
+        return pitch_length * pitch_width
+        
+    reflected = []
+    for pt in all_pts:
+        x, y = pt[0], pt[1]
+        reflected.append([-x, y])
+        reflected.append([2 * pitch_length - x, y])
+        reflected.append([x, -y])
+        reflected.append([x, 2 * pitch_width - y])
+        reflected.append([-x, -y])
+        reflected.append([-x, 2 * pitch_width - y])
+        reflected.append([2 * pitch_length - x, -y])
+        reflected.append([2 * pitch_length - x, 2 * pitch_width - y])
+        
+    expanded = np.vstack([all_pts, reflected])
+    try:
+        vor = Voronoi(expanded)
+        dists_real = np.sum((all_pts - target) ** 2, axis=1)
+        target_idx = np.argmin(dists_real)
+        
+        region_idx = vor.point_region[target_idx]
+        vertices_idxs = vor.regions[region_idx]
+        if -1 in vertices_idxs or not vertices_idxs:
+            return 0.0
+        vertices = vor.vertices[vertices_idxs]
+        hull = ConvexHull(vertices)
+        return float(hull.volume)
+    except Exception:
+        return 0.0
+
+
+# função para calcular a densidade defensiva
+def _get_defensive_density(target_point, defender_points, radius=3.0) -> int:
+    if not defender_points:
+        return 0
+    target = np.asarray(target_point, dtype=float)
+    defs = np.asarray(defender_points, dtype=float)
+    dists = np.sqrt(np.sum((defs - target) ** 2, axis=1))
+    return int(np.sum(dists <= radius))
+
+# função para calcular a distância ao defensor mais próximo
+def _get_nearest_defender_distance(target_point, defender_points) -> float:
+    if not defender_points:
+        return 50.0
+    target = np.asarray(target_point, dtype=float)
+    defs = np.asarray(defender_points, dtype=float)
+    dists = np.sqrt(np.sum((defs - target) ** 2, axis=1))
+    return float(np.min(dists))
+
+
+# função para plotar uma receção de bola no campo
+def plot_reception_on_pitch(ax, row, events_df, title=''):
+    """
+    Plots a ball reception on the pitch, visualizing:
+      - Opponent's defensive convex hull
+      - Receiver's clipped Voronoi cell
+      - All players (teammates in green, opponents in red, goalkeeper in yellow/orange)
+      - The receiver's location
+      - A circle of radius 3.0m representing DENSITY_RADIUS
+    """
+    import matplotlib.patches as patches
+    
+    # Desenhar o campo
+    draw_pitch(ax)
+    
+    rx, ry = float(row['rec_x']), float(row['rec_y'])
+    
+    # 1. Obter jogadores do freeze frame para este evento
+    mask = (events_df['id'] == row['id']) & (events_df['location_y'].notna())
+    frame_players = events_df[mask].copy()
+    frame_players[['px', 'py']] = frame_players['location_y'].apply(lambda v: pd.Series(_extract_xy(v)))
+    
+    # 2. Separar em recetor, colegas, adversários e guarda-redes
+    opponents_df = frame_players[(frame_players['teammate'] == False) & (~frame_players['keeper'].eq(True))]
+    teammates_df = frame_players[(frame_players['teammate'] == True) & (frame_players['actor'] == False)]
+    keeper_df = frame_players[frame_players['keeper'] == True]
+    
+    opponents_xy = list(zip(opponents_df['px'], opponents_df['py']))
+    all_players_xy = list(zip(frame_players['px'], frame_players['py']))
+    
+    # 3. Desenhar Convex Hull dos adversários
+    if len(opponents_xy) >= 3:
+        try:
+            hull_arr = np.array(opponents_xy)
+            hull = ConvexHull(hull_arr)
+            hull_polygon = hull_arr[hull.vertices]
+            poly = patches.Polygon(hull_polygon, closed=True, facecolor='#ef4444', alpha=0.15, edgecolor='#dc2626', linewidth=1.5, linestyle='--', zorder=2)
+            ax.add_patch(poly)
+        except Exception:
+            pass
+            
+    # 4. Desenhar Célula Voronoi do recetor dentro do bloco (interseção)
+    if len(all_players_xy) > 1 and len(opponents_xy) >= 3:
+        try:
+            vor_vertices = _get_clipped_voronoi_vertices(all_players_xy, (rx, ry))
+            hull_arr = np.array(opponents_xy)
+            hull = ConvexHull(hull_arr)
+            hull_vertices = hull_arr[hull.vertices]
+            
+            # Obter os pontos da interseção de ambos os polígonos
+            p1 = np.asarray(vor_vertices)
+            p2 = np.asarray(hull_vertices)
+            path1 = mpath.Path(p1)
+            path2 = mpath.Path(p2)
+            
+            pts = []
+            for pt in p1:
+                if path2.contains_point(pt) or path2.contains_point(pt, radius=1e-5):
+                    pts.append(pt)
+            for pt in p2:
+                if path1.contains_point(pt) or path1.contains_point(pt, radius=1e-5):
+                    pts.append(pt)
+            n1, n2 = len(p1), len(p2)
+            for i in range(n1):
+                edge1_p1 = p1[i]
+                edge1_p2 = p1[(i+1)%n1]
+                for j in range(n2):
+                    edge2_p1 = p2[j]
+                    edge2_p2 = p2[(j+1)%n2]
+                    inter = _get_line_intersection(edge1_p1, edge1_p2, edge2_p1, edge2_p2)
+                    if inter is not None:
+                        pts.append(inter)
+            
+            if len(pts) >= 3:
+                pts = np.unique(np.array(pts).round(6), axis=0)
+                v_hull = ConvexHull(pts)
+                v_polygon = pts[v_hull.vertices]
+                v_poly = patches.Polygon(v_polygon, closed=True, facecolor='#22c55e', alpha=0.30, edgecolor='#15803d', linewidth=1.5, zorder=1)
+                ax.add_patch(v_poly)
+        except Exception:
+            pass
+            
+    # 5. Desenhar círculo de raio 3m ao redor do recetor
+    circle = patches.Circle((rx, ry), radius=3.0, facecolor='none', edgecolor='#b91c1c', linewidth=1.0, linestyle=':', alpha=0.6, zorder=3)
+    ax.add_patch(circle)
+    
+    # 6. Desenhar jogadores
+    # Colegas de equipa (verde)
+    if not teammates_df.empty:
+        ax.scatter(teammates_df['px'], teammates_df['py'], s=60, color='#4ade80', edgecolors='white', linewidths=0.7, alpha=0.85, zorder=4)
+    # Adversários (vermelho)
+    if not opponents_df.empty:
+        ax.scatter(opponents_df['px'], opponents_df['py'], s=65, color='#f87171', edgecolors='white', linewidths=0.7, alpha=0.9, zorder=4)
+    # Guarda-redes (amarelo)
+    if not keeper_df.empty:
+        ax.scatter(keeper_df['px'], keeper_df['py'], s=75, color='#fbbf24', edgecolors='black', linewidths=1.0, alpha=0.95, zorder=5)
+        
+    # 7. Desenhar recetor (verde escuro)
+    ax.scatter(rx, ry, s=140, color='#15803d', edgecolors='white', linewidths=1.5, zorder=6)
+    
+    # Rótulo de texto para o recetor
+    rec_short = _get_short_name(row.get('player', 'Recetor'))
+    if rec_short:
+        rec_y = ry - 3.5 if ry > 8 else ry + 3.5
+        ax.text(rx, rec_y, rec_short, color='#14532d', fontsize=7.0, ha='center', va='center', fontweight='bold', zorder=9,
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='#22c55e', alpha=0.9, linewidth=0.8))
+                
+    # 8. Destacar defensor mais próximo (linha tracejada vermelha)
+    if not opponents_df.empty:
+        opps_arr = np.array(opponents_xy)
+        dists = np.sqrt(np.sum((opps_arr - np.array([rx, ry])) ** 2, axis=1))
+        min_idx = np.argmin(dists)
+        near_x, near_y = opps_arr[min_idx]
+        ax.plot([rx, near_x], [ry, near_y], color='#b91c1c', linewidth=1.5, linestyle=':', alpha=0.8, zorder=3)
+        # Rótulo do defensor mais próximo
+        ax.scatter(near_x, near_y, s=80, color='#ef4444', marker='D', edgecolors='black', linewidths=0.8, zorder=5)
+        
+    ax.set_title(title, fontsize=10.0, color='#1e293b', pad=8, fontweight='bold')
+
