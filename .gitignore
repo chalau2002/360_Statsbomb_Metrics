@@ -1,2 +1,15 @@
 # Virtual environments
 .venv/
+
+# Streamlit secrets (contains database credentials)
+.streamlit/secrets.toml
+
+# OS generated files
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/

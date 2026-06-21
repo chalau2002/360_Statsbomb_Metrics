@@ -5,15 +5,15 @@ import matplotlib.lines as mlines
 from mplsoccer import Pitch
 from scipy.spatial import ConvexHull, Voronoi
 import matplotlib.path as mpath
+import matplotlib.patches as patches
 
-# Constants for defensive-line clustering and line breaking
+# Constants para os clusters e linha defensiva
 LINE_GAP_THRESHOLD = 4.5    # gap em X > 4.5m → nova linha defensiva
 MIN_LINE_SIZE      = 2      # uma linha necessita de pelo menos 2 defesas
 MIN_START_DIST     = 5.0    # o passador deve estar a pelo menos 5m do ponto de interseção
 
 
 # Palete de cores
-
 COL_BROKEN  = '#facc15'  # amarelo — linha quebrada / respetivos defesas
 COL_IN_PATH = '#f97316'  # laranja — linha no trajeto mas não quebrada
 COL_OUT     = '#64748b'  # cinzento — linha fora do corredor do passe
@@ -22,7 +22,26 @@ COL_PASS    = '#22d3ee'  # azul claro — trajetória do passe
 
 
 
-# Pitch
+# Grupos de posições para consolidação e filtragem de jogadores
+POSITION_GROUPS = {
+    'Guarda-redes': ['Goalkeeper'],
+    'Defesas Centrais': ['Center Back', 'Left Center Back', 'Right Center Back'],
+    'Laterais': ['Left Back', 'Right Back', 'Left Wing Back', 'Right Wing Back'],
+    'Médios': [
+        'Center Defensive Midfield', 'Left Defensive Midfield', 'Right Defensive Midfield',
+        'Left Center Midfield', 'Right Center Midfield', 'Center Attacking Midfield'
+    ],
+    'Extremos': [
+        'Left Attacking Midfield', 'Right Attacking Midfield',
+        'Left Midfield', 'Right Midfield', 'Left Wing', 'Right Wing'
+    ],
+    'Avançados': ['Center Forward', 'Left Center Forward', 'Right Center Forward'],
+    'Outros/Substitutos': ['Substitute', 'Desconhecido']
+}
+
+# Dicionário posição individual -> grupo de posição
+POS_TO_GROUP = {pos: grp for grp, positions in POSITION_GROUPS.items() for pos in positions}
+
 def draw_pitch(ax, bg='white', line_color='#374151'):
     Pitch(
         pitch_type='statsbomb',
@@ -34,7 +53,7 @@ def draw_pitch(ax, bg='white', line_color='#374151'):
     ).draw(ax=ax)
 
 
-# Helpers para legend
+# Helpers para legenda
 def pitch_legend_handles():
     return [
         mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor=COL_PASSER,
@@ -70,44 +89,7 @@ def add_pitch_legend(fig, ncol=5, fontsize=9, anchor=(0.5, 0.0)):
     )
 
 
-# Helpers para a legenda do RAI (receção)
-def reception_legend_handles():
-    import matplotlib.lines as mlines
-    import matplotlib.patches as mpatches
-    return [
-        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#15803d',
-                      markeredgecolor='white', markersize=9, label='Receiver'),
-        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#4ade80',
-                      markeredgecolor='white', markersize=7, label='Teammates'),
-        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#f87171',
-                      markeredgecolor='white', markersize=7, label='Defenders'),
-        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#fbbf24',
-                      markeredgecolor='black', markersize=8, label='Goalkeeper'),
-        mlines.Line2D([0], [0], marker='D', color='w', markerfacecolor='#ef4444',
-                      markeredgecolor='black', markersize=7, label='Nearest Defender'),
-        mpatches.Patch(facecolor='#22c55e', edgecolor='#15803d', alpha=0.30,
-                       linewidth=1.5, label='Voronoi inside Hull (Controlled Space)'),
-        mpatches.Patch(facecolor='#ef4444', edgecolor='#dc2626', alpha=0.15,
-                       linewidth=1.5, linestyle='--', label='Defensive Convex Hull'),
-        mlines.Line2D([0], [0], color='#b91c1c', linewidth=1.2, linestyle=':',
-                      label='Density / Proximity (3m)')
-    ]
-
-# Adicionar legenda do RAI na parte inferior central da figura.
-def add_reception_legend(fig, ncol=4, fontsize=9, anchor=(0.5, 0.0)):
-    fig.legend(
-        handles=reception_legend_handles(),
-        loc='lower center',
-        ncol=ncol,
-        fontsize=fontsize,
-        framealpha=0.0,
-        edgecolor='none',
-        bbox_to_anchor=anchor,
-    )
-
-
-
-# Title helper
+# Title helper LBPV
 def pass_title(row, matches_df=None):
     player  = row.get('player', 'Unknown')
     team    = row.get('team', '')
@@ -130,11 +112,13 @@ def pass_title(row, matches_df=None):
             )
 
     return (
-        f"{player} ({team[:3].upper()})  Score: {row['score']:.2f}/10\n"
+        f"{player} ({team[:3].upper()})  LBPV: {row['score']:.2f}\n"
         f"Min {minute}  |  {lines} line(s)  |  {defs} def bypassed"
         f"  |  {dist:.1f}m  |  {outcome}"
         f"{match_str}"
     )
+
+
 
 # abreviar nome do jogador para "P. Último"
 def _get_short_name(name):
@@ -146,12 +130,28 @@ def _get_short_name(name):
     return name
 
 
-# funçao para extrair coordenadas (x, y) de um array/lista
+# funçao para extrair coordenadas (x, y) de um array/lista de forma robusta
 def _extract_xy(arr):
     if arr is None or (isinstance(arr, float) and np.isnan(arr)):
         return np.nan, np.nan
-    arr = np.asarray(arr, dtype=float)
-    return float(arr[0]), float(arr[1])
+    if isinstance(arr, (list, tuple, np.ndarray)):
+        if len(arr) >= 2:
+            try:
+                return float(arr[0]), float(arr[1])
+            except (ValueError, TypeError):
+                return np.nan, np.nan
+        return np.nan, np.nan
+    if isinstance(arr, str):
+        cleaned = arr.strip('{}[]() \t\n\r')
+        if not cleaned:
+            return np.nan, np.nan
+        parts = cleaned.split(',')
+        if len(parts) >= 2:
+            try:
+                return float(parts[0]), float(parts[1])
+            except (ValueError, TypeError):
+                return np.nan, np.nan
+    return np.nan, np.nan
 
 
 # calcular valor posicional da origem do passe com base na coordenada X
@@ -246,26 +246,32 @@ def _count_defenders_bypassed(pass_x, end_x, defenders_xy):
 
 
 # plot gráfico LBPV
-def plot_pass_on_pitch(ax, row, events_df, title=''):
+def plot_pass_on_pitch(ax, row, events_df, title=None, matches_df=None):
+
+    if title is None:
+        title = pass_title(row, matches_df)
 
     draw_pitch(ax)
+
+    if pd.isna(row.get('pass_x')) or pd.isna(row.get('pass_y')) or pd.isna(row.get('end_x')) or pd.isna(row.get('end_y')):
+        ax.text(60, 40, "Coordenadas de passe em falta.", ha='center', va='center', color='red', fontsize=12, fontweight='bold')
+        return
 
     px, py = float(row['pass_x']), float(row['pass_y'])
     ex, ey = float(row['end_x']),  float(row['end_y'])
 
-    # Obter defesas do feeze frame
+    # Obter defesas do freeze frame
     mask = (
         (events_df['id'] == row['id']) &
         (events_df['teammate'] == False) &
         (events_df['actor']    == False) &
         (~events_df['keeper'].eq(True))
     )
-    defenders_xy = [
-        (float(np.asarray(r['location_y'], dtype=float)[0]),
-         float(np.asarray(r['location_y'], dtype=float)[1]))
-        for _, r in events_df[mask].iterrows()
-        if r['location_y'] is not None
-    ]
+    defenders_xy = []
+    for _, r in events_df[mask].iterrows():
+        coord = _extract_xy(r['location_y'])
+        if not np.isnan(coord[0]) and not np.isnan(coord[1]):
+            defenders_xy.append(coord)
 
     # Desenhar cada linha defensiva
     for cluster in _cluster_defenders_by_x(defenders_xy):
@@ -364,6 +370,72 @@ def plot_pass_on_pitch(ax, row, events_df, title=''):
 
 # Helpers para RAI
 
+# helper para o titulo do RAI
+def reception_title(row, matches_df=None):
+    player  = row.get('player', 'Unknown')
+    team    = row.get('team', '')
+    minute  = int(row.get('minute', 0))
+    
+    score   = float(row.get('score', 0.0))
+    space   = float(row.get('voronoi_area', 0.0))
+    dens    = float(row.get('defensive_density', 0.0))
+    dist    = float(row.get('nearest_defender_distance', 0.0))
+    diff    = float(row.get('difficulty_context', 0.0))
+
+    match_str = ''
+    if matches_df is not None:
+        m = matches_df[matches_df['match_id'] == row['match_id']]
+        if not m.empty:
+            r = m.iloc[0]
+            match_str = (
+                f"\n{r['home_team']} {int(r['home_score'])}"
+                f"–{int(r['away_score'])} {r['away_team']}"
+            )
+
+    return (
+        f"{player} ({team[:3].upper()})  RAI: {score:.2f}\n"
+        f"Min {minute}  |  Space: {space:.1f}m²  |  Density: {dens:.1f}"
+        f"  |  Nearest Def.: {dist:.1f}m  |  Difficulty: {diff:.3f}"
+        f"{match_str}"
+    )
+
+
+# Helpers para a legenda do RAI
+def reception_legend_handles():
+    import matplotlib.lines as mlines
+    import matplotlib.patches as mpatches
+    return [
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#15803d',
+                      markeredgecolor='white', markersize=9, label='Receiver'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#4ade80',
+                      markeredgecolor='white', markersize=7, label='Teammates'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#f87171',
+                      markeredgecolor='white', markersize=7, label='Defenders'),
+        mlines.Line2D([0], [0], marker='o', color='w', markerfacecolor='#fbbf24',
+                      markeredgecolor='black', markersize=8, label='Goalkeeper'),
+        mlines.Line2D([0], [0], marker='D', color='w', markerfacecolor='#ef4444',
+                      markeredgecolor='black', markersize=7, label='Nearest Defender'),
+        mpatches.Patch(facecolor='#22c55e', edgecolor='#15803d', alpha=0.30,
+                       linewidth=1.5, label='Voronoi inside Hull (Controlled Space)'),
+        mpatches.Patch(facecolor='#ef4444', edgecolor='#dc2626', alpha=0.15,
+                       linewidth=1.5, linestyle='--', label='Defensive Convex Hull'),
+        mlines.Line2D([0], [0], color='#b91c1c', linewidth=1.2, linestyle=':',
+                      label='Density / Proximity (3m)')
+    ]
+
+# Adicionar legenda do RAI na parte inferior central da figura.
+def add_reception_legend(fig, ncol=4, fontsize=9, anchor=(0.5, 0.0)):
+    fig.legend(
+        handles=reception_legend_handles(),
+        loc='lower center',
+        ncol=ncol,
+        fontsize=fontsize,
+        framealpha=0.0,
+        edgecolor='none',
+        bbox_to_anchor=anchor,
+    )
+
+
 # função para verificar se o recetor está dentro do convex hull dos defesas
 def _is_inside_convex_hull(point, hull_points) -> bool:
     
@@ -392,7 +464,7 @@ def _get_convex_hull_area(points) -> float:
         return 0.0
 
 
-# função para calcular a interseção de duas linhas/segmentos
+# função para calcular a interseção de duas linhas
 def _get_line_intersection(p1, p2, q1, q2):
     x1, y1 = p1
     x2, y2 = p2
@@ -421,15 +493,15 @@ def _intersect_convex_polygons(poly1, poly2) -> float:
     path2 = mpath.Path(p2)
     
     pts = []
-    # 1. Vértices de poly1 dentro de poly2
+    # Vértices de poly1 dentro de poly2
     for pt in p1:
         if path2.contains_point(pt) or path2.contains_point(pt, radius=1e-5):
             pts.append(pt)
-    # 2. Vértices de poly2 dentro de poly1
+    # Vértices de poly2 dentro de poly1
     for pt in p2:
         if path1.contains_point(pt) or path1.contains_point(pt, radius=1e-5):
             pts.append(pt)
-    # 3. Interseções entre as arestas
+    # Interseções entre as arestas
     n1 = len(p1)
     n2 = len(p2)
     for i in range(n1):
@@ -570,28 +642,39 @@ def _get_nearest_defender_distance(target_point, defender_points) -> float:
 
 
 # função para plotar uma receção de bola no campo
-def plot_reception_on_pitch(ax, row, events_df, title=''):
-    """
-    Plots a ball reception on the pitch, visualizing:
-      - Opponent's defensive convex hull
-      - Receiver's clipped Voronoi cell
-      - All players (teammates in green, opponents in red, goalkeeper in yellow/orange)
-      - The receiver's location
-      - A circle of radius 3.0m representing DENSITY_RADIUS
-    """
-    import matplotlib.patches as patches
+def plot_reception_on_pitch(ax, row, events_df, title=None, matches_df=None):
     
+    if title is None:
+        title = reception_title(row, matches_df)
+        
     # Desenhar o campo
     draw_pitch(ax)
     
+    if pd.isna(row.get('rec_x')) or pd.isna(row.get('rec_y')):
+        ax.text(60, 40, "Coordenadas de receção em falta.", ha='center', va='center', color='red', fontsize=12, fontweight='bold')
+        return
+
     rx, ry = float(row['rec_x']), float(row['rec_y'])
     
-    # 1. Obter jogadores do freeze frame para este evento
+    # obter jogadores do freeze frame para este evento
     mask = (events_df['id'] == row['id']) & (events_df['location_y'].notna())
     frame_players = events_df[mask].copy()
+    if frame_players.empty:
+        # Se não houver freeze frame, apenas desenha o recetor
+        ax.scatter(rx, ry, s=140, color='#15803d', edgecolors='white', linewidths=1.5, zorder=6)
+        rec_short = _get_short_name(row.get('player', 'Recetor'))
+        if rec_short:
+            rec_y = ry - 3.5 if ry > 8 else ry + 3.5
+            ax.text(rx, rec_y, rec_short, color='#14532d', fontsize=7.0, ha='center', va='center', fontweight='bold', zorder=9,
+                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='#22c55e', alpha=0.9, linewidth=0.8))
+        ax.set_title(title, fontsize=10.0, color='#1e293b', pad=8, fontweight='bold')
+        return
+
+    # Extrai e filtra apenas coordenadas válidas
     frame_players[['px', 'py']] = frame_players['location_y'].apply(lambda v: pd.Series(_extract_xy(v)))
+    frame_players = frame_players.dropna(subset=['px', 'py'])
     
-    # 2. Separar em recetor, colegas, adversários e guarda-redes
+    # separar em recetor, colegas, adversários e guarda-redes
     opponents_df = frame_players[(frame_players['teammate'] == False) & (~frame_players['keeper'].eq(True))]
     teammates_df = frame_players[(frame_players['teammate'] == True) & (frame_players['actor'] == False)]
     keeper_df = frame_players[frame_players['keeper'] == True]
@@ -599,7 +682,7 @@ def plot_reception_on_pitch(ax, row, events_df, title=''):
     opponents_xy = list(zip(opponents_df['px'], opponents_df['py']))
     all_players_xy = list(zip(frame_players['px'], frame_players['py']))
     
-    # 3. Desenhar Convex Hull dos adversários
+    # desenhar Convex Hull dos adversários
     if len(opponents_xy) >= 3:
         try:
             hull_arr = np.array(opponents_xy)
@@ -610,7 +693,7 @@ def plot_reception_on_pitch(ax, row, events_df, title=''):
         except Exception:
             pass
             
-    # 4. Desenhar Célula Voronoi do recetor dentro do bloco (interseção)
+    # desenhar Célula Voronoi do recetor dentro do bloco (interseção)
     if len(all_players_xy) > 1 and len(opponents_xy) >= 3:
         try:
             vor_vertices = _get_clipped_voronoi_vertices(all_players_xy, (rx, ry))
@@ -618,7 +701,7 @@ def plot_reception_on_pitch(ax, row, events_df, title=''):
             hull = ConvexHull(hull_arr)
             hull_vertices = hull_arr[hull.vertices]
             
-            # Obter os pontos da interseção de ambos os polígonos
+            # obter os pontos da interseção de ambos os polígonos
             p1 = np.asarray(vor_vertices)
             p2 = np.asarray(hull_vertices)
             path1 = mpath.Path(p1)
@@ -651,39 +734,39 @@ def plot_reception_on_pitch(ax, row, events_df, title=''):
         except Exception:
             pass
             
-    # 5. Desenhar círculo de raio 3m ao redor do recetor
+    # desenhar círculo de raio 3m ao redor do recetor
     circle = patches.Circle((rx, ry), radius=3.0, facecolor='none', edgecolor='#b91c1c', linewidth=1.0, linestyle=':', alpha=0.6, zorder=3)
     ax.add_patch(circle)
     
-    # 6. Desenhar jogadores
-    # Colegas de equipa (verde)
+    # desenhar jogadores
+    # colegas de equipa (verde)
     if not teammates_df.empty:
         ax.scatter(teammates_df['px'], teammates_df['py'], s=60, color='#4ade80', edgecolors='white', linewidths=0.7, alpha=0.85, zorder=4)
-    # Adversários (vermelho)
+    # adversários (vermelho)
     if not opponents_df.empty:
         ax.scatter(opponents_df['px'], opponents_df['py'], s=65, color='#f87171', edgecolors='white', linewidths=0.7, alpha=0.9, zorder=4)
-    # Guarda-redes (amarelo)
+    # guarda-redes (amarelo)
     if not keeper_df.empty:
         ax.scatter(keeper_df['px'], keeper_df['py'], s=75, color='#fbbf24', edgecolors='black', linewidths=1.0, alpha=0.95, zorder=5)
         
-    # 7. Desenhar recetor (verde escuro)
+    # desenhar recetor (verde escuro)
     ax.scatter(rx, ry, s=140, color='#15803d', edgecolors='white', linewidths=1.5, zorder=6)
     
-    # Rótulo de texto para o recetor
+    # rótulo de texto para o recetor
     rec_short = _get_short_name(row.get('player', 'Recetor'))
     if rec_short:
         rec_y = ry - 3.5 if ry > 8 else ry + 3.5
         ax.text(rx, rec_y, rec_short, color='#14532d', fontsize=7.0, ha='center', va='center', fontweight='bold', zorder=9,
                 bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='#22c55e', alpha=0.9, linewidth=0.8))
                 
-    # 8. Destacar defensor mais próximo (linha tracejada vermelha)
+    # destacar defesa mais próximo (linha tracejada vermelha)
     if not opponents_df.empty:
         opps_arr = np.array(opponents_xy)
         dists = np.sqrt(np.sum((opps_arr - np.array([rx, ry])) ** 2, axis=1))
         min_idx = np.argmin(dists)
         near_x, near_y = opps_arr[min_idx]
         ax.plot([rx, near_x], [ry, near_y], color='#b91c1c', linewidth=1.5, linestyle=':', alpha=0.8, zorder=3)
-        # Rótulo do defensor mais próximo
+        # rótulo do defesa mais próximo
         ax.scatter(near_x, near_y, s=80, color='#ef4444', marker='D', edgecolors='black', linewidths=0.8, zorder=5)
         
     ax.set_title(title, fontsize=10.0, color='#1e293b', pad=8, fontweight='bold')
