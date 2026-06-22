@@ -59,7 +59,7 @@ def show_player_comparison(lineups, lbp, rai, player_positions):
         'lbp_avg_score': (safe(p_a, 'lbp_avg_score'), safe(p_b, 'lbp_avg_score'), True,  "LBPV Average Score", "{:.2f}"),
         'avg_lines':     (safe(p_a, 'avg_lines'), safe(p_b, 'avg_lines'), True,  "Linhas Quebradas / Passe LB", "{:.2f}"),
         'rai_count':     (int(p_a['rai_count']), int(p_b['rai_count']), True,  "Receções sob Pressão", "{}"),
-        'rai_avg_score': (safe(p_a, 'rai_avg_score'), safe(p_b, 'rai_avg_score'), True,  "RAI Score Médio", "{:.2f}"),
+        'rai_avg_score': (safe(p_a, 'rai_avg_score'), safe(p_b, 'rai_avg_score'), True,  "RAI Average Score", "{:.2f}"),
         'avg_space':     (safe(p_a, 'avg_space'), safe(p_b, 'avg_space'), True,  "Controlo de Espaço (m²)", "{:.1f}"),
         'avg_difficulty': (safe(p_a, 'avg_difficulty'), safe(p_b, 'avg_difficulty'), True,  "Dificuldade Contextual", "{:.3f}"),
     }
