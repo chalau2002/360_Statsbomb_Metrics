@@ -2,10 +2,36 @@
 
 Este projeto é uma ferramenta de suporte analítico com foco na análise de métricas táticas avançadas geradas a partir de dados StatsBomb 360 e eventos. O objetivo principal é quantificar o desempenho de jogadores e equipas através de duas métricas originais:
 
-- **LBPV (Line-Breaking Pass Value)**: Avalia o impacto e a qualidade dos passes que quebram linhas defensivas adversárias, considerando a progressão espacial, defesas ultrapassados e outcome da jogada.
-- **RAI (Reception Ability Index)**: Mede a capacidade de receção de bola sob pressão dentro do bloco adversário, ponderando a área de Voronoi controlada pelo recetor no momento da receção e calculando um índice de dificuldade associada à mesma.
+## Métricas Desenvolvidas
 
-A aplicação é constituída por uma pipeline de processamento de dados (Notebooks Jupyter) e um dashboard interativo (Streamlit) que consome os dados a partir de uma base de dados PostgreSQL (local ou remota).
+### Line-Breaking Pass Value (LBPV)
+Quantifica o valor contextual de passes que conseguem quebrar as linhas defensivas adversárias e que geram vantagem posicional e desorganizam a estrutura da linha defensiva adversária.
+
+* **Filtros Iniciais:** Apenas passes rasteiros ou baixos (`Ground/Low Pass`), concluídos com sucesso, excluindo bolas paradas, cruzamentos e passes de guarda-redes.
+* **Critérios Geométricos de Validação:**
+  1. **Avanço Territorial:** Ganho de pelo menos 12m na direção da baliza adversária (`end_x - pass_x >= 12m`).
+  2. **Deteção de Linhas Defensivas:** Identificadas a partir do freeze frame 360 ao agrupar os adversários em clusters com base na proximidade em X (gaps $\le$ 4.5m definem a mesma linha; mínimo 2 defesas por linha).
+  3. **Rotura Estrutural:** A trajetória do passe tem de cruzar fisicamente o intervalo entre dois defesas adjacentes da linha (não são validados passes que contornam a linha por fora).
+  4. **Distância Mínima:** O passador deve estar a $\ge$ 5m da linha no momento do passe.
+* **Composição do Score (LBPV):**
+  $$Score = 10\% \times \text{Zone Value} + 15\% \times \text{Distance Norm} + 30\% \times \text{Defenders Bypassed Norm} + 20\% \times \text{Line Break Norm} + 25\% \times \text{Outcome Norm}$$
+  * *Outcome Norm:* Avalia remates ou golos gerados nos 10 segundos seguintes. Assistências diretas recebem o xG/golo completo; passes indiretos sofrem uma penalização de 0.6.
+
+### Reception Ability Index (RAI)
+Mede a capacidade de receber a bola sob pressão no interior do bloco adversário, ao avaliar a área de Voronoi controlada pelo recetor no momento da receção e através do cálculo de um índice de dificuldade associada à mesma.
+
+* **Filtros Iniciais:** Apenas eventos de receção de bola (`Ball Receipt*`) executados por jogadores de campo.
+* **Critérios Espaciais de Validação:**
+  1. **Estrutura Mínima:** Pelo menos 3 defesas identificados no freeze frame (para ser possível calcular o Convex Hull).
+  2. **Posicionamento Interno:** O recetor tem de estar obrigatoriamente dentro do *Convex Hull* desenhado pelas posições dos adversários.
+* **Composição do Score (RAI):**
+  $$RAI = 30\% \times \text{Voronoi Area Norm} + 70\% \times \text{Difficulty Context}$$
+  * *Voronoi Area:* Área de interseção entre a célula de Voronoi do recetor e o Convex Hull dos defesas (espaço de controlo efetivo no bloco).
+  * *Difficulty Context:* Composto por:
+    * **30% Densidade:** Adversários num raio de 3m.
+    * **25% Proximidade:** Proximidade do defesa mais próximo.
+    * **20% Compactação:** Área do Convex Hull (área menor = maior compactação = maior dificuldade).
+    * **25% Valor da Zona:** Relevância estratégica da zona da receção.
 
 ---
 
