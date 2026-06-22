@@ -68,6 +68,7 @@ Mede a capacidade de receber a bola sob pressão no interior do bloco adversári
 │   └── utils.py                    # Funções auxiliares partilhadas
 │
 ├── .streamlit/
+│   ├── config.toml                 # Definir light mode como default
 │   └── secrets.toml                # Credenciais da base de dados (não versionado)
 │
 ├── requirements.txt
